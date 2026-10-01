@@ -1,9 +1,8 @@
-#include "HardwareSerial.h"
 /*
   Библиотека управления модулем TM1638 Led&Key
 
-  Версия: 0.5
-  Дата:   2024-07-09
+  Версия: 0.9
+  Дата:   2026-10-01
 
 */
 #include "TM1638LedKey.h"
@@ -92,13 +91,17 @@ void TM1638LedKey::sendSymbol(uint8_t addr, uint8_t symbol) {
 /*
 *  Чтение кнопок.
 *
-*  Например, возвращаемое значение содержит 4 байта. На модуле 8 кнопок, хватает байта.
-*  Но! Модуль может обрабатывать до 24 кнопок.
+*  Модуль отдаёт 4 байта ключевого сканирования. В байте i линия KS(2i+1)
+*  находится в бите 0, линия KS(2i+2) — в бите 4 (данные идут младшим битом вперёд,
+*  поэтому читаем через shiftIn с порядком LSBFIRST).
+*  На плате LED&KEY кнопки подключены к линиям KS «шахматкой»:
+*      S1=KS1, S2=KS3, S3=KS5, S4=KS7, S5=KS2, S6=KS4, S7=KS6, S8=KS8.
+*  Функция преобразует линии KS в физические номера кнопок.
+*  Возвращаемая маска: бит 0 = кнопка 1 (крайняя слева), бит 7 = кнопка 8 (крайняя справа).
 */
 uint32_t TM1638LedKey::buttons(void) {
-    // TODO (spronin#1#):  разобраться с этой переменной. Она избыточна, диодов то всего 8
-    uint32_t keys = 0;  //
-    uint32_t tmp = 0;
+    uint8_t raw[4];      // 4 байта ключевого сканирования
+    uint32_t keys = 0;
 
     digitalWrite(strobePin, LOW);
     shiftOut(dataPin, clockPin, LSBFIRST, CMD_TM1638_KEY_SCAN);
@@ -109,16 +112,22 @@ uint32_t TM1638LedKey::buttons(void) {
     digitalWrite(dataPin, HIGH);
 
     for (uint8_t i = 0; i < 4; i++) {
-        tmp = shiftIn(dataPin, clockPin, MSBFIRST);
-        if (tmp > 0) {
-            tmp >>= i;
-        }
-        keys |= (uint32_t)tmp;
+        raw[i] = shiftIn(dataPin, clockPin, LSBFIRST);
     }
 
     pinMode(dataPin, OUTPUT);
     digitalWrite(dataPin, LOW);
     digitalWrite(strobePin, HIGH);
+
+    for (uint8_t i = 0; i < 4; i++) {
+        if (raw[i] & 0x01) {  // линия KS(2i+1) -> кнопки 1..4
+            keys |= (1UL << i);
+        }
+        if (raw[i] & 0x10) {  // линия KS(2i+2) -> кнопки 5..8
+            keys |= (1UL << (i + 4));
+        }
+    }
+
     return keys;
 }  // buttons
 
@@ -130,15 +139,6 @@ void TM1638LedKey::setBrightness(uint8_t brightness) {
     sendCommand(CMD_TM1638_DISPLAY_OFF + inc);
     // Интересно, что если написать так sendCommand(CMD_TM1638_DISPLAY_OFF + (brightness > 8)? 8: brightness);
     // то программа занимает на 8 байт больше места, размер переменных не меняется
-}
-
-/*
-*  Обновление состояния всех СВ в соответствие с частной переменной leds
-*  В этой переменной будем хранить состояние СВ, которое устанавливается в функции setLED.
-*  Биты, соотвествующие СВ, возвращаются функцией getLED
-*/
-void TM1638LedKey::setLEDs(void) {
-    // TODO:
 }
 
 /*
@@ -174,7 +174,8 @@ uint8_t TM1638LedKey::getLEDAddress(uint8_t num) {
 *  Если передано значение больше 8, то возвращается адрес последнего 8-го разряда.
 */
 uint8_t TM1638LedKey::getGridAddress(uint8_t num) {
-    uint8_t n = (num > 8) ? 8 : num;
+    uint8_t n = (num < 1) ? 1 : num;  // зажимаем номер в диапазон 1..8
+    n = (n > DIGITS) ? DIGITS : n;
     return ADR_TM1638_START + (n - 1) * 2;
 }
 
@@ -187,14 +188,13 @@ uint8_t TM1638LedKey::getGridAddress(uint8_t num) {
 *  для последующего чтения
 */
 void TM1638LedKey::setLED(uint8_t num, uint8_t on) {
-    uint8_t n = num;
-    n = (num > 8) ? 8 : num;
-    n = (num == 0) ? 1 : num;
+    uint8_t n = (num < 1) ? 1 : num;  // зажимаем номер в диапазон 1..8
+    n = (n > DIGITS) ? DIGITS : n;
     on = (on > 1) ? 1 : on;
     if (on) {  // регистрируем состояние СВ
-        leds |= (1 << n - 1);
+        leds |= (1 << (n - 1));
     } else {
-        leds &= ~(1 << n - 1);
+        leds &= ~(1 << (n - 1));
     }
     sendSymbol(getLEDAddress(n), on);
 }
@@ -206,15 +206,14 @@ void TM1638LedKey::setLED(uint8_t num, uint8_t on) {
 *  Нужно учитывать, что возвращается не реальное состояние СВ, а бит частной переменной leds
 */
 bool TM1638LedKey::getLED(uint8_t num) {
-    uint8_t n = num;
-    n = (num > DIGITS) ? DIGITS : num;
-    n = (num < 1) ? 1 : num;
-    return bool((1 << n - 1) & leds);
+    uint8_t n = (num < 1) ? 1 : num;  // зажимаем номер в диапазон 1..8
+    n = (n > DIGITS) ? DIGITS : n;
+    return bool((1 << (n - 1)) & leds);
 }
 
 void TM1638LedKey::setGrid(uint8_t grid, uint8_t val, bool dp) {
     uint8_t gridAddr = getGridAddress(grid);
-    uint8_t symbol = NUMBER_FONT[val];
+    uint8_t symbol = (val < sizeof(NUMBER_FONT)) ? NUMBER_FONT[val] : NUMBER_FONT[CLEAR];  // защита от выхода за пределы таблицы
     if (dp) {
         symbol |= (1 << 7);
     }
@@ -228,6 +227,66 @@ uint32_t TM1638LedKey::getButtons(void) {
     uint32_t keys1 = buttons();
     if (keys0 == keys1) return keys0; else return 0;
 
+}
+
+/*
+*  Неблокирующее чтение кнопок с антидребезгом.
+*  В отличие от getButtons(), не вызывает delay(): функцию нужно регулярно
+*  вызывать в loop(). Состояние считается стабильным, если прочитанные значения
+*  не менялись не менее DEBOUNCE_DELAY мс.
+*  Возвращает маску стабильно нажатых кнопок (бит 0 = кнопка 1).
+*/
+uint32_t TM1638LedKey::getButtonsNonBlocking(void) {
+    uint32_t now = millis();
+    uint32_t raw = buttons();  // чтение без задержек (shiftIn, единицы мкс)
+    prevKeys = debouncedKeys;  // состояние с прошлого опроса (для детектирования фронта)
+    if (raw != lastRawKeys) {          // показания изменились — перезапускаем отсчёт
+        lastRawKeys = raw;
+        lastChangeMs = now;
+    } else if (now - lastChangeMs >= DEBOUNCE_DELAY) {
+        debouncedKeys = raw;           // показания стабильны — фиксируем
+    }
+    return debouncedKeys;
+}
+
+/*
+*  Маска кнопок, только что нажатых (фронт 0 -> 1) в текущем цикле.
+*  Требует вызова getButtonsNonBlocking() в текущем цикле.
+*  Бит 0 = кнопка 1, ..., бит 7 = кнопка 8.
+*/
+uint32_t TM1638LedKey::getPressedEvents(void) {
+    return debouncedKeys & ~prevKeys;
+}
+
+/*
+*  Маска кнопок, только что отпущенных (фронт 1 -> 0) в текущем цикле.
+*  Требует вызова getButtonsNonBlocking() в текущем цикле.
+*  Бит 0 = кнопка 1, ..., бит 7 = кнопка 8.
+*/
+uint32_t TM1638LedKey::getReleasedEvents(void) {
+    return prevKeys & ~debouncedKeys;
+}
+
+/*
+*  Момент нажатия кнопки (фронт 0 -> 1).
+*  Требует вызова getButtonsNonBlocking() в текущем цикле.
+*    num - номер кнопки 1..8 (зажимается в диапазон).
+*/
+bool TM1638LedKey::buttonPressed(uint8_t num) {
+    uint8_t n = (num < 1) ? 1 : num;
+    n = (n > DIGITS) ? DIGITS : n;
+    return (getPressedEvents() & (1UL << (n - 1))) != 0;
+}
+
+/*
+*  Момент отпускания кнопки (фронт 1 -> 0).
+*  Требует вызова getButtonsNonBlocking() в текущем цикле.
+*    num - номер кнопки 1..8 (зажимается в диапазон).
+*/
+bool TM1638LedKey::buttonReleased(uint8_t num) {
+    uint8_t n = (num < 1) ? 1 : num;
+    n = (n > DIGITS) ? DIGITS : n;
+    return (getReleasedEvents() & (1UL << (n - 1))) != 0;
 }
 
 void TM1638LedKey::setGauges(uint8_t gauge1, uint8_t gauge2, uint8_t gauge3, uint8_t gauge4, uint8_t gauge5) {
@@ -279,21 +338,23 @@ void TM1638LedKey::clear(void) {
     }
 }
 
-void TM1638LedKey::showFloat(uint32_t val, uint8_t dp, uint8_t pos) {
+void TM1638LedKey::showFloat(int32_t val, uint8_t dp, uint8_t pos) {
     uint8_t counter, curPos;
-    char vals[DIGITS];
-    snprintf(vals, 9, "%ld", val);
+    char vals[DIGITS + 1];  // +1 под завершающий '\0'
+    bool negative = (val < 0);
+    uint32_t magnitude = negative ? (0u - (uint32_t)val) : (uint32_t)val;  // модуль числа (корректно и для INT32_MIN)
+    snprintf(vals, sizeof(vals), "%lu", (unsigned long)magnitude);
     counter = 0;
-    curPos = (pos < 1) ? 1 : pos;
-    curPos = (pos > DIGITS) ? DIGITS : pos;
+    curPos = (pos < 1) ? 1 : pos;  // зажимаем стартовый разряд в диапазон 1..8
+    curPos = (curPos > DIGITS) ? DIGITS : curPos;
+
+    if (negative && curPos <= DIGITS) {  // знак "-" занимает отдельный разряд
+        setGrid(curPos, MINUS, false);
+        curPos++;
+    }
 
     while (counter < DIGITS && vals[counter] != '\0' && curPos <= DIGITS) {
-        //for (counter = 0; counter < 8; counter++) {
-        if (vals[counter] == '-') {
-            setGrid(curPos, MINUS, (counter + 1 == dp));
-        } else {
-            setGrid(curPos, vals[counter] - 48, (counter + 1 == dp));
-        }
+        setGrid(curPos, vals[counter] - '0', (counter + 1 == dp));
         counter++;
         curPos++;
     }

@@ -11,6 +11,11 @@ getLED	KEYWORD2
 setGauges	KEYWORD2
 setGrid	KEYWORD2
 getButtons	KEYWORD2
+getButtonsNonBlocking	KEYWORD2
+buttonPressed	KEYWORD2
+buttonReleased	KEYWORD2
+getPressedEvents	KEYWORD2
+getReleasedEvents	KEYWORD2
 clear	KEYWORD2
 showFloat	KEYWORD2
 

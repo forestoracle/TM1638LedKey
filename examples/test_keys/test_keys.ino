@@ -1,4 +1,4 @@
-#include "TM1638LedKey.h"
+#include <TM1638LedKey.h>
 
 uint8_t strobe = 7;
 uint8_t clock = 9;
@@ -11,21 +11,23 @@ uint8_t demoDelay = 50;
 TM1638LedKey tm(data, clock, strobe);
 
 void getButtons(void) {
-    uint32_t keys = 0;
-    uint8_t counter;
-    keys = tm.getButtons();
+    tm.getButtonsNonBlocking();                  // опрос кнопок — раз в цикл, без delay()
+    uint32_t pressed = tm.getPressedEvents();    // маска только что нажатых кнопок
+    uint32_t released = tm.getReleasedEvents();  // маска только что отпущенных кнопок
 
-    //keys = (keys << 16) | (keys >> 16);
-
-    if (keys != 0) {
-        Serial.println(keys, BIN);
+    for (uint8_t c = 0; c < 8; c++) {
+        if (bitRead(pressed, c)) {               // по фронту нажатия переключаем светодиод
+            tm.setLED(c + 1, !tm.getLED(c + 1));
+        }
     }
 
-    for (uint8_t c = 0; c <= 7; c++) {
-        if (bitRead(keys, c)) {
-            tm.setLED(c + 1, !tm.getLED(c + 1));
-            //Serial.println(c);
-        }
+    if (pressed != 0) {
+        Serial.print("pressed:  ");
+        Serial.println(pressed, BIN);
+    }
+    if (released != 0) {
+        Serial.print("released: ");
+        Serial.println(released, BIN);
     }
 }  // getButtons
 
